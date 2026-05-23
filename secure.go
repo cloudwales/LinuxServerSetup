@@ -41,6 +41,9 @@ var SecureSteps = []Step{
 
 	{Category: "Scanners", Title: "rkhunter + chkrootkit", Prompt: "Install rootkit scanners?", Fn: stepRootkit},
 	{Category: "Scanners", Title: "Lynis (security audit)", Prompt: "Install Lynis?", Fn: stepLynis},
+
+	{Category: "Containers", Title: "Docker CE (latest from docker.com)", Prompt: "Install the latest Docker from the official repo?", Fn: stepDocker},
+	{Category: "Containers", Title: "ufw-docker (gate Docker ports via UFW)", Prompt: "Install ufw-docker so UFW actually filters container traffic?", Fn: stepUfwDocker},
 }
 
 type stepStatus int

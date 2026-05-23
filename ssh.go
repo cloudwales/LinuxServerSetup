@@ -18,7 +18,7 @@ var sshdSettings = map[string]string{
 	"PermitRootLogin":        "no",
 	"PermitEmptyPasswords":   "no",
 	"X11Forwarding":          "no",
-	"MaxAuthTries":           "3",
+	"MaxAuthTries":           "6",
 	"LoginGraceTime":         "30",
 	"ClientAliveInterval":    "300",
 	"ClientAliveCountMax":    "2",

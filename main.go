@@ -6,6 +6,31 @@ import (
 	"runtime"
 )
 
+// ensureSudoUser refuses to enter the main menu until a non-root sudo user
+// exists. SecureSteps[0] is the user-creation step.
+func ensureSudoUser(cfg Config) {
+	if nonRootSudoUserExists() {
+		return
+	}
+	fmt.Println()
+	fmt.Println(warn("No non-root sudo user found on this server."))
+	fmt.Println("SSH hardening disables root login — without a sudo user you'll be locked out.")
+	fmt.Println()
+
+	for !nonRootSudoUserExists() {
+		if !confirm("Create one now?", true) {
+			fmt.Println(warn("Continuing without a sudo user."))
+			fmt.Println(warn("Do NOT run SSH hardening unless you have another way back in (e.g. DigitalOcean web console)."))
+			return
+		}
+		if err := runStep(cfg, SecureSteps[0]); err != nil {
+			fmt.Println(errMsg(fmt.Sprintf("user creation failed: %v", err)))
+		}
+	}
+	fmt.Println()
+	fmt.Println(ok("Sudo user is in place — proceeding to main menu"))
+}
+
 func main() {
 	if runtime.GOOS != "linux" {
 		fmt.Fprintln(os.Stderr, warn("This tool is intended to run on a Linux server. Detected: "+runtime.GOOS))
@@ -29,6 +54,8 @@ func main() {
 	}
 
 	cfg := Config{Stage: stage, Distro: distro}
+
+	ensureSudoUser(cfg)
 
 	for {
 		choice := promptMainMenu()

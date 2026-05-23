@@ -139,6 +139,27 @@ func userExists(name string) bool {
 	return exec.Command("id", name).Run() == nil
 }
 
+// nonRootSudoUserExists reports whether there is at least one non-root member
+// of the sudo group. Used at startup to refuse to continue until a sudo user
+// exists — running SSH hardening without one is a guaranteed lockout.
+func nonRootSudoUserExists() bool {
+	out, err := runCapture("getent", "group", "sudo")
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(out, ":")
+	if len(parts) < 4 {
+		return false
+	}
+	for _, m := range strings.Split(parts[3], ",") {
+		m = strings.TrimSpace(m)
+		if m != "" && m != "root" {
+			return true
+		}
+	}
+	return false
+}
+
 func validUsername(name string) bool {
 	if name == "" || len(name) > 32 {
 		return false
