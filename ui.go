@@ -134,6 +134,9 @@ func promptDistro() Distro {
 // stays in sync with the length of SecureSteps.
 func mailChoice() int { return len(SecureSteps) + 2 }
 
+// nvimChoice is the menu index for the Neovim dev-tools option.
+func nvimChoice() int { return mailChoice() + 1 }
+
 func promptMainMenu() int {
 	fmt.Println()
 	fmt.Println(head("Main menu"))
@@ -154,6 +157,10 @@ func promptMainMenu() int {
 	fmt.Printf("  %2d) Configure Postfix smarthost relay\n", mailChoice())
 
 	fmt.Println()
+	fmt.Println("   " + cCyan + "── Developer tools ──" + cReset)
+	fmt.Printf("  %2d) Install Neovim + LSP starter (gopls, intelephense, dockerls, bashls, jsonls)\n", nvimChoice())
+
+	fmt.Println()
 	fmt.Println("   0) Exit")
-	return promptInt("Choose: ", 0, mailChoice())
+	return promptInt("Choose: ", 0, nvimChoice())
 }

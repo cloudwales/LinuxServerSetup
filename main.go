@@ -80,6 +80,12 @@ func main() {
 			} else {
 				fmt.Println(ok("Mail setup complete."))
 			}
+		case choice == nvimChoice():
+			if err := ConfigureNvim(cfg); err != nil {
+				fmt.Println(errMsg(fmt.Sprintf("Nvim setup failed: %v", err)))
+			} else {
+				fmt.Println(ok("Nvim setup complete."))
+			}
 		}
 	}
 }
