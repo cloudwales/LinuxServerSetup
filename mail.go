@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -68,7 +69,12 @@ func promptMailConfig() (MailConfig, bool) {
 		return mc, false
 	}
 	if p := readLine("Relay port [587]: "); p != "" {
-		fmt.Sscanf(p, "%d", &mc.RelayPort)
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			fmt.Println(warn("not a valid port — keeping 587"))
+		} else {
+			mc.RelayPort = n
+		}
 	}
 	mc.Username = readLine("SASL username: ")
 	mc.Password = readPassword("SASL password (hidden): ")

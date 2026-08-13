@@ -1,0 +1,6 @@
+# Build output — this repo previously tracked 3MB binaries.
+/server-setup
+/server-setup-script
+*.exe
+
+.DS_Store

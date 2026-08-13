@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 )
 
 // ensureSudoUser refuses to enter the main menu until a non-root sudo user
@@ -43,16 +45,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A password prompt leaves the terminal with echo off; Ctrl-C must not
+	// hand the operator back a shell that no longer shows what they type.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		setEcho(true)
+		fmt.Fprintln(os.Stderr, "\n"+warn("interrupted"))
+		os.Exit(130)
+	}()
+
 	banner()
 
-	stage := promptServerStage()
-	distro := promptDistro()
-
+	distro, name := detectDistro()
 	if distro != DistroUbuntu {
-		fmt.Println(warn("Only Ubuntu is supported right now."))
+		fmt.Fprintln(os.Stderr, warn("Only Ubuntu is supported right now. Detected: "+name))
 		os.Exit(1)
 	}
+	fmt.Println(ok("Detected " + name))
 
+	stage := promptServerStage()
 	cfg := Config{Stage: stage, Distro: distro}
 
 	ensureSudoUser(cfg)
@@ -85,6 +98,14 @@ func main() {
 				fmt.Println(errMsg(fmt.Sprintf("Nvim setup failed: %v", err)))
 			} else {
 				fmt.Println(ok("Nvim setup complete."))
+			}
+		case choice == githubChoice():
+			if err := ConfigureGitHub(cfg); err != nil {
+				fmt.Println(errMsg(fmt.Sprintf("GitHub setup failed: %v", err)))
+			}
+		case choice == yubikeyChoice():
+			if err := ConfigureYubiKey(cfg); err != nil {
+				fmt.Println(errMsg(fmt.Sprintf("YubiKey setup failed: %v", err)))
 			}
 		}
 	}

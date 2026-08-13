@@ -28,6 +28,16 @@ func runCapture(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// runOut captures stdout only. Use this wherever the output gets parsed —
+// CombinedOutput mixes in stderr, and a single deprecation warning from sshd
+// would corrupt the parse.
+func runOut(name string, args ...string) (string, error) {
+	c := exec.Command(name, args...)
+	c.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+	out, err := c.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
 // aptInstall installs packages with sensible flags.
 func aptInstall(pkgs ...string) error {
 	args := append([]string{"install", "-y", "--no-install-recommends"}, pkgs...)
@@ -45,4 +55,3 @@ func task(title string, fn func() error) error {
 	fmt.Println(ok(title + " — done"))
 	return nil
 }
-

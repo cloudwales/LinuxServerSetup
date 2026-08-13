@@ -75,7 +75,10 @@ func installNvimPackages() error {
 }
 
 func writeNvimConfig(username string) error {
-	home := "/home/" + username
+	home := userHome(username)
+	if home == "" {
+		return fmt.Errorf("could not determine home directory for %s", username)
+	}
 	configDir := filepath.Join(home, ".config", "nvim")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return err

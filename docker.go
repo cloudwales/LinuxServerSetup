@@ -3,14 +3,28 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
+// dockerKeyFingerprint is Docker's published release key. Verifying it turns
+// the key fetch from "trust whatever TLS handed us" into a real check.
+const dockerKeyFingerprint = "9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+
 func stepDocker(cfg Config) error {
-	// Remove any older bundled or third-party container packages that would
-	// conflict with docker-ce from the official repo.
+	// Older bundled or third-party container packages conflict with docker-ce.
+	// Removing containerd/runc stops every running container, so on a server
+	// already in use this has to be the operator's call, not ours.
 	conflicting := []string{"docker.io", "docker-doc", "docker-compose", "docker-compose-v2", "podman-docker", "containerd", "runc"}
-	args := append([]string{"remove", "-y"}, conflicting...)
-	_ = run("apt-get", args...) // best-effort; ignore if none installed
+	remove := true
+	if cfg.interactive() {
+		fmt.Println(warn("Conflicting packages will be removed: " + strings.Join(conflicting, " ")))
+		fmt.Println(warn("If containerd or runc are in use, this stops running containers."))
+		remove = confirm("Remove them?", false)
+	}
+	if remove {
+		args := append([]string{"remove", "-y"}, conflicting...)
+		_ = run("apt-get", args...) // best-effort; fine if none are installed
+	}
 
 	if err := aptInstall("ca-certificates", "curl", "gnupg"); err != nil {
 		return err
@@ -20,11 +34,16 @@ func stepDocker(cfg Config) error {
 		return err
 	}
 
-	// Fetch and dearmor the Docker GPG key. Pipe via bash to keep the install
-	// step matching Docker's own published instructions.
-	keyCmd := "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg"
+	// pipefail matters here: without it the exit status is gpg's alone and a
+	// failed download can pass unnoticed.
+	keyCmd := "set -o pipefail; curl -fsSL https://download.docker.com/linux/ubuntu/gpg | " +
+		"gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg"
 	if err := run("bash", "-c", keyCmd); err != nil {
 		return fmt.Errorf("download Docker GPG key: %w", err)
+	}
+	if err := verifyGPGFingerprint("/etc/apt/keyrings/docker.gpg", dockerKeyFingerprint); err != nil {
+		os.Remove("/etc/apt/keyrings/docker.gpg")
+		return err
 	}
 	if err := os.Chmod("/etc/apt/keyrings/docker.gpg", 0o644); err != nil {
 		return err
@@ -81,11 +100,28 @@ func stepDocker(cfg Config) error {
 	fmt.Println()
 	fmt.Println(warn("Heads-up: Docker manages its own iptables chains and bypasses UFW by default."))
 	fmt.Println(warn("Containers that publish ports will be reachable even if UFW says otherwise."))
-	fmt.Println(warn("If you need UFW to gate container ports, look up 'ufw-docker' integration."))
+	fmt.Println(warn("Run the ufw-docker step next to close that gap."))
 
 	out, _ := runCapture("docker", "--version")
 	if out != "" {
 		fmt.Println(ok(out))
 	}
 	return nil
+}
+
+// verifyGPGFingerprint checks a dearmored keyring holds exactly the key we
+// expect, so a hijacked mirror or MITM can't seed an apt repo signing key.
+func verifyGPGFingerprint(path, want string) error {
+	out, err := runOut("gpg", "--no-default-keyring", "--with-colons", "--show-keys", path)
+	if err != nil {
+		return fmt.Errorf("inspect GPG key: %w", err)
+	}
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Split(l, ":")
+		if len(f) > 9 && f[0] == "fpr" && strings.EqualFold(f[9], want) {
+			fmt.Println(ok("GPG key fingerprint verified: " + want))
+			return nil
+		}
+	}
+	return fmt.Errorf("GPG key fingerprint mismatch — expected %s, refusing to trust this key", want)
 }

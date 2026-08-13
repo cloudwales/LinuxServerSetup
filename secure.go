@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 )
 
 // Step is one hardening action. Category groups related steps in the menu.
@@ -36,7 +38,6 @@ var SecureSteps = []Step{
 	{Category: "Kernel", Title: "AppArmor (verify enabled)", Prompt: "Confirm AppArmor is enabled?", Fn: stepAppArmor},
 
 	{Category: "Monitoring", Title: "AIDE (file integrity)", Prompt: "Install and initialise AIDE? (slow on large filesystems)", Fn: stepAIDE},
-	{Category: "Monitoring", Title: "inotify-tools + watcher service", Prompt: "Install inotify-tools and watcher for /etc, /bin, /usr/bin, /sbin?", Fn: stepInotify},
 	{Category: "Monitoring", Title: "auditd (syscall auditing)", Prompt: "Install auditd?", Fn: stepAuditd},
 
 	{Category: "Scanners", Title: "rkhunter + chkrootkit", Prompt: "Install rootkit scanners?", Fn: stepRootkit},
@@ -95,6 +96,15 @@ func SecureServer(cfg Config) error {
 	}
 
 	printSummary(results)
+
+	// Last thing on a fresh server: get the code onto it.
+	fmt.Println()
+	if confirm("Set up GitHub access and clone a repository now?", true) {
+		if err := ConfigureGitHub(cfg); err != nil {
+			fmt.Println(errMsg(fmt.Sprintf("GitHub setup failed: %v", err)))
+			fmt.Println(warn("re-run it any time from the main menu"))
+		}
+	}
 	return nil
 }
 
@@ -130,11 +140,12 @@ func printSummary(results []stepResult) {
 
 	fmt.Println()
 	fmt.Println(head("Recommended follow-ups"))
-	fmt.Println("  • Test SSH from a NEW terminal as the new sudo user before closing this one.")
+	fmt.Println("  • Test SSH from a NEW terminal as the sudo user, THEN cancel the rollback:")
+	fmt.Println("      " + cBold + "systemctl stop " + sshRollbackUnit + ".timer" + cReset)
+	fmt.Println("  • Confirm what sshd is really doing: `sudo sshd -T | grep -Ei 'passwordauth|permitroot'`.")
 	fmt.Println("  • Reboot if the kernel was upgraded.")
 	fmt.Println("  • Run `sudo lynis audit system` and review the hardening score.")
-	fmt.Println("  • Tail /var/log/inotify-watch.log to see filesystem alerts in real time.")
-	fmt.Println("  • Check /var/log/aide/ tomorrow morning for the first daily AIDE report.")
+	fmt.Println("  • Watch for the first AIDE report in root's mail tomorrow (`mail` / your relay inbox).")
 	if failN > 0 {
 		fmt.Println()
 		fmt.Println(warn(fmt.Sprintf("%d step(s) failed — re-run them individually from the main menu after fixing the cause.", failN)))
@@ -156,7 +167,10 @@ func stepUnattendedUpgrades(cfg Config) error {
 APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";
 `
-	return os.WriteFile("/etc/apt/apt.conf.d/20auto-upgrades", []byte(conf), 0o644)
+	if err := os.WriteFile("/etc/apt/apt.conf.d/20auto-upgrades", []byte(conf), 0o644); err != nil {
+		return err
+	}
+	return run("systemctl", "enable", "--now", "unattended-upgrades")
 }
 
 func stepUFW(cfg Config) error {
@@ -169,17 +183,30 @@ func stepUFW(cfg Config) error {
 	if err := run("ufw", "default", "allow", "outgoing"); err != nil {
 		return err
 	}
-	if err := run("ufw", "allow", "OpenSSH"); err != nil {
-		return err
+	// Allow the ports sshd actually listens on. The "OpenSSH" app profile is
+	// port 22 only — on a server that has moved SSH elsewhere, enabling UFW
+	// with that profile is an instant lockout.
+	for _, p := range sshPorts() {
+		if err := run("ufw", "allow", fmt.Sprintf("%d/tcp", p)); err != nil {
+			return err
+		}
+		fmt.Println(ok(fmt.Sprintf("allowed SSH on port %d/tcp", p)))
 	}
 	return run("ufw", "--force", "enable")
 }
 
 func stepFail2ban(cfg Config) error {
-	if err := aptInstall("fail2ban"); err != nil {
+	// python3-systemd is only a Recommends, and aptInstall passes
+	// --no-install-recommends — without it the systemd backend below cannot
+	// start and the whole jail silently fails.
+	if err := aptInstall("fail2ban", "python3-systemd"); err != nil {
 		return err
 	}
-	jail := `[DEFAULT]
+	var ports []string
+	for _, p := range sshPorts() {
+		ports = append(ports, strconv.Itoa(p))
+	}
+	jail := fmt.Sprintf(`[DEFAULT]
 bantime = 1h
 findtime = 10m
 maxretry = 5
@@ -187,7 +214,8 @@ backend = systemd
 
 [sshd]
 enabled = true
-`
+port = %s
+`, strings.Join(ports, ","))
 	if err := os.WriteFile("/etc/fail2ban/jail.local", []byte(jail), 0o644); err != nil {
 		return err
 	}
@@ -198,20 +226,27 @@ enabled = true
 }
 
 func stepSSH(cfg Config) error {
-	hasKey := hasAuthorizedKeys()
 	disablePassword := false
 
-	if hasKey {
-		fmt.Println(ok("authorized_keys found — safe to disable password auth"))
+	// The key has to belong to a non-root sudo user. Root nearly always has one
+	// and root login is exactly what this step disables, so a root key is no
+	// evidence at all that anyone can still get in.
+	if user, hasKey := authorizedKeyUser(); hasKey {
+		fmt.Println(ok("sudo user " + user + " has an authorized key — safe to disable password auth"))
 		if cfg.interactive() {
 			disablePassword = confirm("Disable SSH password authentication?", true)
 		} else {
 			disablePassword = true
 		}
 	} else {
-		fmt.Println(warn("No authorized_keys found on any user. Leaving password auth ENABLED to avoid lockout."))
+		fmt.Println(warn("No non-root sudo user has an authorized_keys entry."))
+		fmt.Println(warn("Leaving password auth ENABLED to avoid lockout (root login is still disabled)."))
 		fmt.Println(warn("Add a key with: ssh-copy-id user@this-host  — then re-run this step."))
 	}
+
+	fmt.Println(warn("Note: TCP and agent forwarding are disabled — this breaks `ssh -L` tunnels,"))
+	fmt.Println(warn("jump hosts (`ssh -J`) and some IDE remote features. Re-enable per-user with a"))
+	fmt.Println(warn("Match block if you need them."))
 
 	return hardenSSH(disablePassword)
 }
@@ -229,56 +264,11 @@ func stepAIDE(cfg Config) error {
 			return err
 		}
 	}
-	cron := `#!/bin/sh
-/usr/bin/aide.wrapper --check | tee /var/log/aide/aide-$(date +\%Y\%m\%d).log
-`
-	if err := os.MkdirAll("/var/log/aide", 0o750); err != nil {
-		return err
-	}
-	return os.WriteFile("/etc/cron.daily/aide-check", []byte(cron), 0o755)
-}
-
-func stepInotify(cfg Config) error {
-	if err := aptInstall("inotify-tools"); err != nil {
-		return err
-	}
-	script := `#!/bin/sh
-# Logs filesystem events on sensitive paths to /var/log/inotify-watch.log
-exec /usr/bin/inotifywait -m -r \
-  --timefmt '%Y-%m-%dT%H:%M:%S' \
-  --format '%T %w%f %e' \
-  -e modify,create,delete,move,attrib \
-  /etc /bin /usr/bin /sbin
-`
-	if err := os.WriteFile("/usr/local/sbin/inotify-watch.sh", []byte(script), 0o755); err != nil {
-		return err
-	}
-	unit := `[Unit]
-Description=inotify watcher for sensitive paths
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/sbin/inotify-watch.sh
-StandardOutput=append:/var/log/inotify-watch.log
-StandardError=append:/var/log/inotify-watch.log
-Restart=on-failure
-RestartSec=5
-Nice=10
-
-[Install]
-WantedBy=multi-user.target
-`
-	if err := os.WriteFile("/etc/systemd/system/inotify-watch.service", []byte(unit), 0o644); err != nil {
-		return err
-	}
-	if err := run("systemctl", "daemon-reload"); err != nil {
-		return err
-	}
-	if err := run("systemctl", "enable", "inotify-watch.service"); err != nil {
-		return err
-	}
-	return run("systemctl", "restart", "inotify-watch.service")
+	// No custom cron here: aide-common already ships /etc/cron.daily/aide,
+	// which runs the check and mails root. A second job would just scan the
+	// filesystem twice a night and write a logfile nothing rotates.
+	fmt.Println(ok("daily check runs via the packaged /etc/cron.daily/aide (results are mailed to root)"))
+	return nil
 }
 
 func stepAuditd(cfg Config) error {
@@ -339,12 +329,19 @@ net.ipv6.conf.all.accept_redirects = 0
 net.ipv6.conf.default.accept_redirects = 0
 net.ipv6.conf.all.accept_source_route = 0
 net.ipv6.conf.default.accept_source_route = 0
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+net.ipv4.conf.all.arp_ignore = 1
+net.ipv4.conf.all.arp_announce = 2
 # Kernel
 kernel.dmesg_restrict = 1
 kernel.kptr_restrict = 2
 kernel.randomize_va_space = 2
+kernel.yama.ptrace_scope = 1
 fs.protected_hardlinks = 1
 fs.protected_symlinks = 1
+fs.protected_fifos = 2
+fs.protected_regular = 2
 fs.suid_dumpable = 0
 `
 	if err := os.WriteFile("/etc/sysctl.d/99-server-setup.conf", []byte(conf), 0o644); err != nil {
@@ -357,7 +354,8 @@ func stepAppArmor(cfg Config) error {
 	if err := aptInstall("apparmor", "apparmor-utils"); err != nil {
 		return err
 	}
-	out, _ := runCapture("aa-status", "--enabled")
-	fmt.Println(out)
+	if _, err := runCapture("aa-status", "--enabled"); err != nil {
+		fmt.Println(warn("AppArmor is not enabled in this kernel — profiles will not be enforced"))
+	}
 	return run("systemctl", "enable", "--now", "apparmor")
 }

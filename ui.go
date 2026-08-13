@@ -34,11 +34,17 @@ func errMsg(s string) string { return cRed + "✗ " + s + cReset }
 func step(s string) string   { return cBlue + "▸ " + s + cReset }
 func head(s string) string   { return cBold + s + cReset }
 
+// readLine reads one answer. On EOF it exits rather than returning "": this
+// tool is interactive-only, and callers that loop until they get valid input
+// would otherwise spin forever against a closed stdin.
 func readLine(prompt string) string {
 	fmt.Print(prompt)
 	line, err := stdin.ReadString('\n')
-	if err != nil {
-		return ""
+	if err != nil && line == "" {
+		setEcho(true)
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, warn("stdin closed — nothing left to read, exiting"))
+		os.Exit(1)
 	}
 	return strings.TrimSpace(line)
 }
@@ -117,17 +123,28 @@ func promptServerStage() ServerStage {
 	}
 }
 
-func promptDistro() Distro {
-	fmt.Println()
-	fmt.Println(head("Which distribution?"))
-	fmt.Println("  1) Ubuntu")
-	fmt.Println("  2) Other (not yet supported)")
-	switch promptInt("Choose: ", 1, 2) {
-	case 1:
-		return DistroUbuntu
-	default:
-		return DistroOther
+// detectDistro reads what the server actually is. Asking the operator and
+// believing the answer means every Ubuntu-specific command below runs blind on
+// whatever this really is.
+func detectDistro() (Distro, string) {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return DistroOther, "unknown"
 	}
+	fields := map[string]string{}
+	for _, l := range strings.Split(string(data), "\n") {
+		if k, v, ok := strings.Cut(l, "="); ok {
+			fields[k] = strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+	name := fields["PRETTY_NAME"]
+	if name == "" {
+		name = fields["ID"]
+	}
+	if fields["ID"] == "ubuntu" {
+		return DistroUbuntu, name
+	}
+	return DistroOther, name
 }
 
 // MailChoice is the menu index for the mail option. Computed each call so it
@@ -136,6 +153,12 @@ func mailChoice() int { return len(SecureSteps) + 2 }
 
 // nvimChoice is the menu index for the Neovim dev-tools option.
 func nvimChoice() int { return mailChoice() + 1 }
+
+// githubChoice is the menu index for the GitHub credentials + clone option.
+func githubChoice() int { return nvimChoice() + 1 }
+
+// yubikeyChoice is the menu index for the YubiKey / FIDO2 option.
+func yubikeyChoice() int { return githubChoice() + 1 }
 
 func promptMainMenu() int {
 	fmt.Println()
@@ -159,8 +182,13 @@ func promptMainMenu() int {
 	fmt.Println()
 	fmt.Println("   " + cCyan + "── Developer tools ──" + cReset)
 	fmt.Printf("  %2d) Install Neovim + LSP starter (gopls, intelephense, dockerls, bashls, jsonls)\n", nvimChoice())
+	fmt.Printf("  %2d) GitHub login (save a token) + clone a repository\n", githubChoice())
+
+	fmt.Println()
+	fmt.Println("   " + cCyan + "── Hardware keys ──" + cReset)
+	fmt.Printf("  %2d) YubiKey / FIDO2 SSH keys\n", yubikeyChoice())
 
 	fmt.Println()
 	fmt.Println("   0) Exit")
-	return promptInt("Choose: ", 0, nvimChoice())
+	return promptInt("Choose: ", 0, yubikeyChoice())
 }
