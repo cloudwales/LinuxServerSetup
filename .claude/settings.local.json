@@ -4,7 +4,27 @@
       "Bash(go build *)",
       "Bash(go vet *)",
       "Read(//tmp/**)",
-      "Bash(rm /tmp/server-setup-linux server-setup-script)"
+      "Bash(rm /tmp/server-setup-linux server-setup-script)",
+      "Bash(gofmt -l .)",
+      "Bash(curl -fsSL \"https://api.github.com/repos/chaifeng/ufw-docker/commits/master\")",
+      "Bash(curl -fsSL \"https://api.github.com/repos/chaifeng/ufw-docker/tags\")",
+      "Bash(curl -fsSL -o ufw-docker \"https://raw.githubusercontent.com/chaifeng/ufw-docker/251123/ufw-docker\")",
+      "Bash(shasum -a 256 ufw-docker)",
+      "Bash(curl -fsSL -o ufw-docker-commit \"https://raw.githubusercontent.com/chaifeng/ufw-docker/78366b6afe6e566cd53f7e55341889c2e3c863e7/ufw-docker\")",
+      "Bash(shasum -a 256 ufw-docker-commit)",
+      "Bash(go test *)",
+      "Bash(python3 -c \"import git_filter_repo\")",
+      "Bash(git rev-list *)",
+      "Bash(git cat-file *)",
+      "Bash(awk '$1==\"blob\" && $3>100000 {print $3, $4}')",
+      "Bash(cp -a /Users/chrisbowen/Projects/Apps/CloudWales/ServerSetup /private/tmp/claude-501/-Users-chrisbowen-Projects-Apps-CloudWales-ServerSetup/ea8d66e6-7948-4bbc-a933-cde5e2934456/scratchpad/repo-backup)",
+      "Bash(cp -a *.go .gitignore /private/tmp/claude-501/-Users-chrisbowen-Projects-Apps-CloudWales-ServerSetup/ea8d66e6-7948-4bbc-a933-cde5e2934456/scratchpad/worktree-backup/)",
+      "Bash(git -C /private/tmp/claude-501/-Users-chrisbowen-Projects-Apps-CloudWales-ServerSetup/ea8d66e6-7948-4bbc-a933-cde5e2934456/scratchpad/repo-backup log --oneline)",
+      "Bash(git reset *)",
+      "Bash(git filter-repo *)",
+      "Bash(git fetch *)",
+      "Bash(git log *)",
+      "Bash(go list *)"
     ]
   }
 }
