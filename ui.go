@@ -111,6 +111,22 @@ func promptInt(prompt string, min, max int) int {
 	}
 }
 
+// promptIntDefault is promptInt with an answer for a bare enter.
+func promptIntDefault(prompt string, min, max, def int) int {
+	for {
+		raw := readLine(prompt)
+		if raw == "" {
+			return def
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < min || n > max {
+			fmt.Println(warn(fmt.Sprintf("Enter a number between %d and %d.", min, max)))
+			continue
+		}
+		return n
+	}
+}
+
 func promptServerStage() ServerStage {
 	fmt.Println(head("Is this a new server or one already in use?"))
 	fmt.Println("  1) New server (apply hardened defaults non-interactively)")
@@ -151,14 +167,20 @@ func detectDistro() (Distro, string) {
 // stays in sync with the length of SecureSteps.
 func mailChoice() int { return len(SecureSteps) + 2 }
 
+// webChoice is the menu index for the web-server ports option.
+func webChoice() int { return mailChoice() + 1 }
+
 // nvimChoice is the menu index for the Neovim dev-tools option.
-func nvimChoice() int { return mailChoice() + 1 }
+func nvimChoice() int { return webChoice() + 1 }
 
 // githubChoice is the menu index for the GitHub credentials + clone option.
 func githubChoice() int { return nvimChoice() + 1 }
 
 // yubikeyChoice is the menu index for the YubiKey / FIDO2 option.
 func yubikeyChoice() int { return githubChoice() + 1 }
+
+// statusChoice is the menu index for the read-only status report.
+func statusChoice() int { return yubikeyChoice() + 1 }
 
 func promptMainMenu() int {
 	fmt.Println()
@@ -177,7 +199,11 @@ func promptMainMenu() int {
 
 	fmt.Println()
 	fmt.Println("   " + cCyan + "── Mail ──" + cReset)
-	fmt.Printf("  %2d) Configure Postfix smarthost relay\n", mailChoice())
+	fmt.Printf("  %2d) Configure outgoing mail relay (Postmark by default)\n", mailChoice())
+
+	fmt.Println()
+	fmt.Println("   " + cCyan + "── Web ──" + cReset)
+	fmt.Printf("  %2d) Open web server ports 80/443 (Caddy, nginx — also fixes Docker containers)\n", webChoice())
 
 	fmt.Println()
 	fmt.Println("   " + cCyan + "── Developer tools ──" + cReset)
@@ -189,6 +215,10 @@ func promptMainMenu() int {
 	fmt.Printf("  %2d) YubiKey / FIDO2 SSH keys\n", yubikeyChoice())
 
 	fmt.Println()
+	fmt.Println("   " + cCyan + "── Status ──" + cReset)
+	fmt.Printf("  %2d) Server status report (what's installed, what's running, what's exposed)\n", statusChoice())
+
+	fmt.Println()
 	fmt.Println("   0) Exit")
-	return promptInt("Choose: ", 0, yubikeyChoice())
+	return promptInt("Choose: ", 0, statusChoice())
 }

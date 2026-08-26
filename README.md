@@ -100,7 +100,8 @@ turned off.
 
 ## Main menu
 
-`1` runs everything in order. `2`–`17` run one step each. The rest are separate tools.
+`1` runs everything in order. `2`–`17` run one step each. The rest are separate tools,
+including the read-only status report.
 
 | Category | Step |
 |---|---|
@@ -114,7 +115,7 @@ turned off.
 | Auth | libpam-pwquality (password policy) |
 | Kernel | Kernel hardening (sysctl) |
 | Kernel | AppArmor (verify enabled) |
-| Monitoring | AIDE (file integrity) |
+| Monitoring | AIDE (file integrity + emailed daily report) |
 | Monitoring | auditd (syscall auditing) |
 | Scanners | rkhunter + chkrootkit |
 | Scanners | Lynis (security audit) |
@@ -128,19 +129,74 @@ A few details worth knowing:
 
 - **UFW** allows the ports sshd actually listens on, read from `sshd -T`, not a
   hardcoded 22. Enabling a firewall that only opens port 22 on a server that moved SSH
-  elsewhere is an instant lockout.
+  elsewhere is an instant lockout. **SSH is the only thing it opens** — 80 and 443 stay
+  closed until you open them from the *Web* menu option below.
 - **Docker** bypasses UFW by default — containers publishing ports are reachable
   regardless of firewall rules. The `ufw-docker` step closes that. It downloads a
   third-party script pinned to an immutable commit and verified against a SHA-256
   before it is ever made executable.
-- **AIDE** relies on the packaged `/etc/cron.daily/aide`, which mails root. Set up mail
-  below or you'll never see the reports.
+- **AIDE** relies on the packaged `/etc/cron.daily/aide`. The step asks where the daily
+  report should be emailed and writes it to `MAILTO` in `/etc/default/aide`; if no
+  outgoing relay is configured yet it offers to set one up (Postmark by default) first,
+  then offers a test email so you know the reports will actually arrive. An integrity
+  monitor whose report rots in `/var/mail/root` is a monitor in name only.
 
 ## Extras
 
-**Postfix smarthost relay** — routes system mail (cron, AIDE, fail2ban, Lynis) to a
-real inbox via an external SMTP relay. Writes SASL credentials `0600` and rewrites the
-sender so providers like SES and Mailgun don't reject mismatched From headers.
+**Outgoing mail relay** — routes system mail (cron, AIDE, fail2ban, Lynis) to a real
+inbox via an external SMTP relay. Writes SASL credentials `0600` and rewrites the
+sender so providers don't reject mismatched From headers.
+
+**Postmark is the default.** Choosing it fills in `smtp.postmarkapp.com:587` and asks
+for one thing — the **server API token** (hidden input, echoed back masked). Postmark
+uses that same token as both the SMTP username and password, so there is no separate
+password to find. Two things to have ready:
+
+- the **server** token, from Postmark › your server › *API Tokens* — the account token
+  cannot send mail;
+- a From address that is a confirmed **Sender Signature** or on a verified domain,
+  otherwise Postmark rejects the message with *Invalid sender signature*.
+
+Option `2` is the old free-form path — host, port, username, password — for Gmail,
+Mailgun, SES or your own relay.
+
+**Server status report** — a read-only sweep of what is actually on the box: OS,
+kernel, uptime, disk, pending reboot and pending security updates; sudo users and which
+of them can get in by key; unattended-upgrades, chrony, UFW (state, default policy,
+allowed ports), Fail2ban jails and current bans, every non-loopback listening port; what
+`sshd -T` really reports for root login, password auth and forwarding, plus whether the
+rollback timer is still armed; password policy; the live sysctl values and AppArmor;
+AIDE's database age, cron job and where its report is emailed; auditd rules; the
+scanners; Postfix relay, credential permissions, root alias and queue depth; Docker and
+whether ufw-docker is actually filtering container ports; Neovim and stored GitHub
+credentials.
+
+It changes nothing, so it is safe on a server this tool never touched — useful for
+checking one before you harden it, and for confirming afterwards that the changes stuck.
+Anything amiss is repeated in a **Needs attention** list at the end.
+
+**Web server ports (80/443)** — the fix for "Caddy is running but the site won't
+load". A hardened server has *two* independent things that drop traffic to `:443`, and
+the fix for one does nothing for the other:
+
+- **UFW's INPUT chain**, for a web server running on the host. The hardening flow opens
+  SSH and nothing else, so `ufw allow 80/tcp` is simply missing.
+- **the `DOCKER-USER` forward chain** that `ufw-docker` installs, for a web server in a
+  container. `ufw allow 443/tcp` does not touch this one — which is why *"I opened the
+  port and it still doesn't work"* is the usual symptom.
+
+This option handles both. It opens 80/tcp, 443/tcp and 443/udp through UFW, then looks
+for running containers publishing 80 or 443 and issues the matching `ufw-docker allow`
+rules for them. 443/udp is not padding: Caddy enables HTTP/3 by default and advertises
+it in `Alt-Svc`, so a browser that has cached the hint tries QUIC first and stalls until
+it falls back — a site that works but feels intermittently slow.
+
+It also flags two things that look like firewall problems and are not: a container
+published on `127.0.0.1:80` (unreachable from outside no matter what the firewall says)
+and a port with no rule *and* nothing listening. Afterwards it prints what is actually
+bound to each port and, if the site is still unreachable, the order worth checking —
+starting with your provider's firewall, which sits in front of UFW and which nothing on
+the box can see.
 
 **Neovim + LSP starter** — Neovim from the stable PPA plus the toolchain for gopls,
 intelephense, dockerls, bashls, jsonls and lua_ls. Drops a lazy.nvim config into a
@@ -182,10 +238,16 @@ sudo sshd -T | grep -Ei 'passwordauth|permitroot|port '
 
 # 3. Review the hardening score:
 sudo lynis audit system
+
+# 4. If you are running a web server, open its ports — the hardening flow does not:
+#    main menu → "Open web server ports 80/443"
 ```
 
-Reboot if the kernel was upgraded. The first AIDE report arrives in root's mail the
-following day.
+Reboot if the kernel was upgraded. The first AIDE report arrives the following day, at
+the address the AIDE step asked for.
+
+Run the **Server status report** from the menu afterwards to confirm the hardening is in
+effect rather than just installed.
 
 ## Upgrading from an earlier version
 

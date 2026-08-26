@@ -93,6 +93,10 @@ func main() {
 			} else {
 				fmt.Println(ok("Mail setup complete."))
 			}
+		case choice == webChoice():
+			if err := ConfigureWebPorts(cfg); err != nil {
+				fmt.Println(errMsg(fmt.Sprintf("Web port setup failed: %v", err)))
+			}
 		case choice == nvimChoice():
 			if err := ConfigureNvim(cfg); err != nil {
 				fmt.Println(errMsg(fmt.Sprintf("Nvim setup failed: %v", err)))
@@ -106,6 +110,10 @@ func main() {
 		case choice == yubikeyChoice():
 			if err := ConfigureYubiKey(cfg); err != nil {
 				fmt.Println(errMsg(fmt.Sprintf("YubiKey setup failed: %v", err)))
+			}
+		case choice == statusChoice():
+			if err := ShowStatus(); err != nil {
+				fmt.Println(errMsg(fmt.Sprintf("Status report failed: %v", err)))
 			}
 		}
 	}

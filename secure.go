@@ -37,7 +37,7 @@ var SecureSteps = []Step{
 	{Category: "Kernel", Title: "Kernel hardening (sysctl)", Prompt: "Apply hardened sysctl defaults?", Fn: stepSysctl},
 	{Category: "Kernel", Title: "AppArmor (verify enabled)", Prompt: "Confirm AppArmor is enabled?", Fn: stepAppArmor},
 
-	{Category: "Monitoring", Title: "AIDE (file integrity)", Prompt: "Install and initialise AIDE? (slow on large filesystems)", Fn: stepAIDE},
+	{Category: "Monitoring", Title: "AIDE (file integrity + emailed daily report)", Prompt: "Install and initialise AIDE? (slow on large filesystems)", Fn: stepAIDE},
 	{Category: "Monitoring", Title: "auditd (syscall auditing)", Prompt: "Install auditd?", Fn: stepAuditd},
 
 	{Category: "Scanners", Title: "rkhunter + chkrootkit", Prompt: "Install rootkit scanners?", Fn: stepRootkit},
@@ -145,6 +145,7 @@ func printSummary(results []stepResult) {
 	fmt.Println("  • Confirm what sshd is really doing: `sudo sshd -T | grep -Ei 'passwordauth|permitroot'`.")
 	fmt.Println("  • Reboot if the kernel was upgraded.")
 	fmt.Println("  • Run `sudo lynis audit system` and review the hardening score.")
+	fmt.Println("  • Running a web server? UFW now blocks 80/443 — open them from the main menu.")
 	fmt.Println("  • Watch for the first AIDE report in root's mail tomorrow (`mail` / your relay inbox).")
 	if failN > 0 {
 		fmt.Println()
@@ -192,7 +193,13 @@ func stepUFW(cfg Config) error {
 		}
 		fmt.Println(ok(fmt.Sprintf("allowed SSH on port %d/tcp", p)))
 	}
-	return run("ufw", "--force", "enable")
+	if err := run("ufw", "--force", "enable"); err != nil {
+		return err
+	}
+	// The single most common surprise after this step: SSH is the only thing
+	// open, so Caddy/nginx and every ACME challenge start failing.
+	fmt.Println(warn("Only SSH is open now — 80/443 are blocked. Use the web ports option to open them."))
+	return nil
 }
 
 func stepFail2ban(cfg Config) error {
@@ -251,10 +258,19 @@ func stepSSH(cfg Config) error {
 	return hardenSSH(disablePassword)
 }
 
+const aideDefaultsPath = "/etc/default/aide"
+
 func stepAIDE(cfg Config) error {
 	if err := aptInstall("aide", "aide-common"); err != nil {
 		return err
 	}
+
+	// Wire up the report before the database build: aideinit takes minutes on
+	// a real filesystem and nobody should be sat waiting on it for a prompt.
+	if err := configureAIDEMail(cfg); err != nil {
+		return err
+	}
+
 	fmt.Println(step("initialising AIDE database (this may take several minutes)…"))
 	if err := run("aideinit", "-y", "-f"); err != nil {
 		return err
@@ -265,10 +281,121 @@ func stepAIDE(cfg Config) error {
 		}
 	}
 	// No custom cron here: aide-common already ships /etc/cron.daily/aide,
-	// which runs the check and mails root. A second job would just scan the
+	// which runs the check and mails $MAILTO. A second job would just scan the
 	// filesystem twice a night and write a logfile nothing rotates.
-	fmt.Println(ok("daily check runs via the packaged /etc/cron.daily/aide (results are mailed to root)"))
+	fmt.Println(ok("daily check runs via the packaged /etc/cron.daily/aide"))
 	return nil
+}
+
+// configureAIDEMail points the packaged daily check at an inbox someone reads.
+// An integrity monitor whose report lands in /var/mail/root on a box no one
+// logs into is a monitor in name only, so this also offers to set up the relay
+// when there isn't one.
+func configureAIDEMail(cfg Config) error {
+	relay := mailRelayHost()
+	if relay == "" {
+		fmt.Println()
+		fmt.Println(warn("No outgoing mail relay is configured — AIDE reports would sit in root's local mailbox."))
+		if confirm("Set up the relay now (Postmark by default)?", true) {
+			if err := ConfigureMail(cfg); err != nil {
+				fmt.Println(errMsg(fmt.Sprintf("mail setup failed: %v", err)))
+				fmt.Println(warn("continuing — re-run mail setup from the main menu, AIDE will pick it up automatically"))
+			}
+			relay = mailRelayHost()
+		}
+	} else {
+		fmt.Println(ok("outgoing relay: " + relay))
+	}
+
+	def := rootAliasTarget()
+	if def == "" {
+		def = "root"
+	}
+	addr := readLine(fmt.Sprintf("Email AIDE reports to [%s]: ", def))
+	if addr == "" {
+		addr = def
+	}
+
+	if err := writeAIDEDefaults(addr); err != nil {
+		return err
+	}
+	fmt.Println(ok("daily AIDE report will be mailed to " + addr))
+
+	if relay == "" {
+		fmt.Println(warn("no relay yet — reports will queue locally until one is configured"))
+		return nil
+	}
+	if confirm("Send a test email to "+addr+" now?", true) {
+		if err := sendTestMailTo(addr, "", "server-setup: AIDE reports will arrive here"); err != nil {
+			fmt.Println(errMsg(fmt.Sprintf("test mail failed: %v", err)))
+			fmt.Println(warn("check /var/log/mail.log — AIDE itself is still configured"))
+			return nil
+		}
+		fmt.Println(ok("test mail queued — check the inbox and /var/log/mail.log"))
+	}
+	return nil
+}
+
+// writeAIDEDefaults sets the mail-related knobs in /etc/default/aide, which
+// /etc/cron.daily/aide sources.
+func writeAIDEDefaults(mailto string) error {
+	if _, err := os.Stat(aideDefaultsPath); err != nil {
+		return fmt.Errorf("%s is missing — is aide-common installed?: %w", aideDefaultsPath, err)
+	}
+	return setShellVars(aideDefaultsPath, map[string]string{
+		"CRON_DAILY_RUN": "yes",
+		"MAILTO":         mailto,
+		"MAILSUBJ":       `"AIDE report for $FQDN"`,
+		// A silent job is indistinguishable from a broken one, so mail the
+		// report even on a night with no changes.
+		"QUIETREPORTS": "no",
+	})
+}
+
+// setShellVars rewrites KEY=value assignments in a shell-sourced defaults
+// file: existing assignments are replaced in place (comments left alone) and
+// anything missing is appended.
+func setShellVars(path string, vars map[string]string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	seen := map[string]bool{}
+	for i, l := range lines {
+		trim := strings.TrimSpace(l)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		k, _, found := strings.Cut(trim, "=")
+		if !found {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v, want := vars[k]
+		if !want {
+			continue
+		}
+		lines[i] = k + "=" + v
+		seen[k] = true
+	}
+	// Drop the empty element the final newline leaves behind, so appended
+	// assignments don't land after a blank line.
+	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for _, k := range sortedKeys(vars) {
+		if !seen[k] {
+			lines = append(lines, k+"="+vars[k])
+		}
+	}
+
+	out := strings.Join(lines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return os.WriteFile(path, []byte(out), 0o644)
 }
 
 func stepAuditd(cfg Config) error {

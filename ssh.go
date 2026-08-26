@@ -238,16 +238,26 @@ func neutraliseSSHDKeys(content string, keys []string) (string, bool) {
 
 // verifySSHD asks sshd what it will actually do. This is the only check that
 // accounts for Includes, first-value-wins ordering and Match blocks.
-func verifySSHD(settings map[string]string) error {
+// sshdEffective asks sshd what it will actually do, rather than what any one
+// config file says. Keys and values are lower-cased.
+func sshdEffective() (map[string]string, error) {
 	out, err := runOut("sshd", "-T")
 	if err != nil {
-		return fmt.Errorf("sshd -T (cannot verify hardening took effect): %w", err)
+		return nil, err
 	}
 	effective := map[string]string{}
 	for _, l := range strings.Split(out, "\n") {
 		if k, v, ok := strings.Cut(strings.TrimSpace(l), " "); ok {
 			effective[strings.ToLower(k)] = strings.ToLower(strings.TrimSpace(v))
 		}
+	}
+	return effective, nil
+}
+
+func verifySSHD(settings map[string]string) error {
+	effective, err := sshdEffective()
+	if err != nil {
+		return fmt.Errorf("sshd -T (cannot verify hardening took effect): %w", err)
 	}
 
 	var bad []string
